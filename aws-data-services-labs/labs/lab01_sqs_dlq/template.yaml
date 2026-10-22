@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lab 01 - SQS standard queue with a dead-letter queue and a DLQ alarm
+Parameters:
+  MaxReceiveCount:
+    Type: Number
+    Default: 3
+    Description: Receives before a message is moved to the DLQ
+Resources:
+  OrdersDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: orders-dlq
+      MessageRetentionPeriod: 1209600 # 14 days, so failures can be investigated and redriven
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: orders-queue
+      VisibilityTimeout: 30 # must exceed the consumer's worst-case processing time
+      ReceiveMessageWaitTimeSeconds: 20 # long polling
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrdersDlq.Arn
+        maxReceiveCount: !Ref MaxReceiveCount
+  DlqNotEmptyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Messages are sitting in the orders DLQ
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt OrdersDlq.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+Outputs:
+  QueueUrl:
+    Value: !Ref OrdersQueue
+  QueueArn:
+    Value: !GetAtt OrdersQueue.Arn
+  DlqUrl:
+    Value: !Ref OrdersDlq
+  DlqArn:
+    Value: !GetAtt OrdersDlq.Arn

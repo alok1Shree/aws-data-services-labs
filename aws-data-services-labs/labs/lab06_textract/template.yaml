@@ -1,0 +1,23 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lab 06 - private S3 bucket for documents processed with Textract
+Resources:
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-extractions
+            Status: Enabled
+            Prefix: extracted/
+            ExpirationInDays: 30
+Outputs:
+  BucketName:
+    Value: !Ref DocumentsBucket

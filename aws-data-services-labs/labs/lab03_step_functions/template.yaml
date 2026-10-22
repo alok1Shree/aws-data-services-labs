@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lab 03 - Step Functions order workflow (validate -> choice -> DynamoDB, failures -> SQS DLQ)
+Parameters:
+  CodeBucket:
+    Type: String
+    Description: S3 bucket holding validate.zip (zip lambdas/validate.py and upload)
+  CodeKey:
+    Type: String
+    Default: validate.zip
+  OrdersTableName:
+    Type: String
+    Default: orders
+    Description: Table from Lab 04
+  DlqQueueUrl:
+    Type: String
+    Description: DlqUrl output of Lab 01
+  DlqQueueArn:
+    Type: String
+    Description: DlqArn output of Lab 01
+Resources:
+  ValidateRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  ValidateFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: validate.handler
+      Role: !GetAtt ValidateRole.Arn
+      Timeout: 10
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: states.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: workflow-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt ValidateFunction.Arn
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OrdersTableName}
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Ref DlqQueueArn
+  OrderWorkflow:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: order-workflow
+      RoleArn: !GetAtt StateMachineRole.Arn
+      Definition:
+        Comment: Validate an order, persist it, or park it in the DLQ
+        StartAt: ValidateOrder
+        States:
+          ValidateOrder:
+            Type: Task
+            Resource: !GetAtt ValidateFunction.Arn
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2
+            Catch:
+              - ErrorEquals: [States.ALL]
+                ResultPath: $.error
+                Next: SendToDlq
+            Next: IsValid
+          IsValid:
+            Type: Choice
+            Choices:
+              - Variable: $.valid
+                BooleanEquals: true
+                Next: PersistOrder
+            Default: SendToDlq
+          PersistOrder:
+            Type: Task
+            Resource: arn:aws:states:::dynamodb:putItem
+            Parameters:
+              TableName: !Ref OrdersTableName
+              Item:
+                pk: {"S.$": "States.Format('CUSTOMER#{}', $.order.customer_id)"}
+                sk: {"S.$": "States.Format('ORDER#{}', $.order.order_id)"}
+                order_id: {"S.$": "$.order.order_id"}
+                customer_id: {"S.$": "$.order.customer_id"}
+                amount: {"N.$": "States.Format('{}', $.order.amount)"}
+                status: {"S": "PLACED"}
+                created_at: {"S.$": "$$.Execution.StartTime"}
+                gsi1pk: {"S": "STATUS#PLACED"}
+                gsi1sk: {"S.$": "$$.Execution.StartTime"}
+              ConditionExpression: attribute_not_exists(pk)
+            ResultPath: null
+            Next: Done
+          SendToDlq:
+            Type: Task
+            Resource: arn:aws:states:::sqs:sendMessage
+            Parameters:
+              QueueUrl: !Ref DlqQueueUrl
+              MessageBody.$: $
+            Next: Rejected
+          Done:
+            Type: Succeed
+          Rejected:
+            Type: Fail
+            Error: OrderRejected
+            Cause: Validation failed or the validator errored; payload sent to the DLQ
+Outputs:
+  StateMachineArn:
+    Value: !Ref OrderWorkflow

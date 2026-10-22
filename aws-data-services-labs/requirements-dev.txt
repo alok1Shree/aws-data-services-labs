@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8
+moto[sqs,dynamodb,events,glue,athena,s3,textract]>=5.0
+cfn-lint>=1.0

@@ -1,0 +1,44 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lab 02 - custom EventBridge bus routing high-value orders to SQS
+Resources:
+  OrdersBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: orders-bus
+  HighValueQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: high-value-orders
+  HighValueQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref HighValueQueue]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: events.amazonaws.com}
+            Action: sqs:SendMessage
+            Resource: !GetAtt HighValueQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt HighValueRule.Arn
+  HighValueRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: high-value-orders
+      EventBusName: !Ref OrdersBus
+      EventPattern:
+        source: ["app.orders"]
+        detail-type: ["OrderPlaced"]
+        detail:
+          amount:
+            - numeric: [">=", 1000]
+      Targets:
+        - Id: high-value-queue
+          Arn: !GetAtt HighValueQueue.Arn
+Outputs:
+  BusName:
+    Value: !Ref OrdersBus
+  QueueUrl:
+    Value: !Ref HighValueQueue
